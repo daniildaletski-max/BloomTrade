@@ -943,8 +943,8 @@ body { background: #050a12; }
   <!-- Navigation Tabs -->
   <div class="flex gap-2 flex-wrap">
     <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-active text-xs px-4 py-2 rounded-lg font-medium transition-all"><i class="fas fa-chart-line mr-1.5"></i>Dashboard</button>
-    <button onclick="switchTab('predictions')" id="tab-predictions" class="text-xs px-4 py-2 rounded-lg font-medium text-dark-200 bg-dark-600/50 border border-dark-400/30 hover:bg-dark-500/50 transition-all"><i class="fas fa-crystal-ball mr-1.5"></i>Predictions</button>
-    <button onclick="switchTab('scanner')" id="tab-scanner" class="text-xs px-4 py-2 rounded-lg font-medium text-dark-200 bg-dark-600/50 border border-dark-400/30 hover:bg-dark-500/50 transition-all"><i class="fas fa-radar mr-1.5"></i>Scanner</button>
+    <button onclick="switchTab('predictions')" id="tab-predictions" class="text-xs px-4 py-2 rounded-lg font-medium text-dark-200 bg-dark-600/50 border border-dark-400/30 hover:bg-dark-500/50 transition-all"><i class="fas fa-wand-magic-sparkles mr-1.5"></i>Predictions</button>
+    <button onclick="switchTab('scanner')" id="tab-scanner" class="text-xs px-4 py-2 rounded-lg font-medium text-dark-200 bg-dark-600/50 border border-dark-400/30 hover:bg-dark-500/50 transition-all"><i class="fas fa-crosshairs mr-1.5"></i>Scanner</button>
     <button onclick="switchTab('portfolio')" id="tab-portfolio" class="text-xs px-4 py-2 rounded-lg font-medium text-dark-200 bg-dark-600/50 border border-dark-400/30 hover:bg-dark-500/50 transition-all"><i class="fas fa-wallet mr-1.5"></i>Portfolio</button>
     <button onclick="switchTab('ai')" id="tab-ai" class="text-xs px-4 py-2 rounded-lg font-medium text-dark-200 bg-dark-600/50 border border-dark-400/30 hover:bg-dark-500/50 transition-all"><i class="fas fa-robot mr-1.5"></i>AI Analyst</button>
   </div>
