@@ -36,6 +36,7 @@
 | `/api/compare` | POST | Compare multiple assets (`{ symbols }`) |
 
 ## URLs
+- **GitHub**: https://github.com/daniildaletski-max/BloomTrade
 - **Live**: https://3000-ifdlfy2s374s35nt5wxwl-2e1b9533.sandbox.novita.ai
 
 ## Data Architecture
@@ -56,4 +57,4 @@
 - **Platform**: Cloudflare Pages
 - **Status**: ✅ Active (Local Development)
 - **Tech Stack**: Hono + TypeScript + Chart.js + TailwindCSS + OpenAI API
-- **Last Updated**: 2026-02-20
+- **Last Updated**: 2026-02-21
