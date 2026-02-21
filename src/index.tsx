@@ -76,7 +76,8 @@ function generateHistoricalData(asset: AssetConfig, days: number = 365) {
   const rand = seededRandom(seedBase)
   
   const data: any[] = []
-  let price = asset.basePrice * (0.7 + rand() * 0.3)
+  // Start price within ±10% of base for realistic values
+  let price = asset.basePrice * (0.92 + rand() * 0.16)
   let volume = 1000000 + rand() * 5000000
   
   for (let i = days; i >= 0; i--) {
@@ -87,7 +88,8 @@ function generateHistoricalData(asset: AssetConfig, days: number = 365) {
     
     const drift = asset.trend + (rand() - 0.5) * 0.001
     const shock = (rand() - 0.5) * 2 * asset.volatility
-    const meanReversion = (asset.basePrice - price) / asset.basePrice * 0.002
+    // Stronger mean reversion to keep prices closer to base
+    const meanReversion = (asset.basePrice - price) / asset.basePrice * 0.008
     
     const returnVal = drift + shock + meanReversion
     price = price * (1 + returnVal)
@@ -602,14 +604,31 @@ function optimizePortfolio(symbols: string[], riskTolerance: number = 0.5) {
 // API ROUTES
 // ============================================================
 
-// Get all available assets
+// Get all available assets with live prices
 app.get('/api/assets', (c) => {
   const categories: Record<string, any[]> = {}
+  const assetsWithPrices: Record<string, any> = {}
+  
   for (const [symbol, asset] of Object.entries(ASSETS)) {
+    const data = generateHistoricalData(asset, 30)
+    const last = data[data.length - 1]
+    const prev = data[data.length - 2]
+    const change = last.close - prev.close
+    const changePercent = (change / prev.close) * 100
+    
+    const enriched = {
+      ...asset,
+      currentPrice: last.close,
+      change: +change.toFixed(4),
+      changePercent: +changePercent.toFixed(2),
+    }
+    
+    assetsWithPrices[symbol] = enriched
+    
     if (!categories[asset.category]) categories[asset.category] = []
-    categories[asset.category].push({ symbol, ...asset })
+    categories[asset.category].push({ symbol, ...enriched })
   }
-  return c.json({ assets: ASSETS, categories })
+  return c.json({ assets: assetsWithPrices, categories })
 })
 
 // Get historical data with technical indicators
@@ -1183,13 +1202,19 @@ function renderAssetList(search = '') {
     if (search && !sym.toLowerCase().includes(search.toLowerCase()) && !asset.name.toLowerCase().includes(search.toLowerCase())) continue
     
     const isActive = sym === state.currentSymbol
+    const price = asset.currentPrice || asset.basePrice
+    const chg = asset.changePercent || 0
+    const isUp = chg >= 0
+    const priceStr = asset.category === 'Forex' ? price.toFixed(4) : '$' + price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})
+    
     html += \`<div class="sidebar-item flex items-center justify-between \${isActive ? 'active bg-accent-500/10 border border-accent-500/20' : ''}" onclick="selectAsset('\${sym}')">
       <div>
         <div class="text-xs font-semibold text-white">\${sym}</div>
         <div class="text-[10px] text-dark-300 truncate" style="max-width:120px">\${asset.name}</div>
       </div>
       <div class="text-right">
-        <div class="text-[10px] font-mono text-dark-100">\${asset.category === 'Forex' ? asset.basePrice.toFixed(4) : '$'+asset.basePrice.toLocaleString()}</div>
+        <div class="text-[10px] font-mono text-dark-100">\${priceStr}</div>
+        <div class="text-[10px] font-mono \${isUp ? 'text-neon-green' : 'text-neon-red'}">\${isUp ? '+' : ''}\${chg.toFixed(2)}%</div>
       </div>
     </div>\`
   }
@@ -1216,6 +1241,13 @@ async function selectAsset(symbol) {
   const res = await fetch(\`/api/market/\${symbol}?days=365\`)
   state.marketData = await res.json()
   
+  // Update the sidebar price for this asset with fresh data
+  if (state.assets[symbol] && state.marketData.summary) {
+    state.assets[symbol].currentPrice = state.marketData.summary.currentPrice
+    state.assets[symbol].changePercent = state.marketData.summary.changePercent
+    renderAssetList()
+  }
+  
   renderTopStats()
   renderCharts()
   renderFibTable()
@@ -1236,6 +1268,15 @@ async function loadScanner() {
   
   const res = await fetch('/api/scanner')
   const data = await res.json()
+  
+  // Update sidebar prices from scanner data (most comprehensive source)
+  for (const item of data.scanner) {
+    if (state.assets[item.symbol]) {
+      state.assets[item.symbol].currentPrice = item.price
+      state.assets[item.symbol].changePercent = item.change
+    }
+  }
+  renderAssetList()
   renderScanner(data.scanner)
 }
 
