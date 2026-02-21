@@ -10,6 +10,11 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.use('/api/*', cors())
 
+app.onError((err, c) => {
+  console.error('Unhandled API error:', err)
+  return c.json({ error: 'Internal server error' }, 500)
+})
+
 // ============================================================
 // MARKET DATA ENGINE - Realistic market data generation
 // ============================================================
@@ -24,6 +29,16 @@ interface AssetConfig {
   beta: number
   dividendYield: number
   sector?: string
+}
+
+interface Candle {
+  date: string
+  timestamp: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
 }
 
 const ASSETS: Record<string, AssetConfig> = {
@@ -60,6 +75,43 @@ const ASSETS: Record<string, AssetConfig> = {
   'DJI': { name: 'Dow Jones', symbol: 'DJI', category: 'Indices', basePrice: 38654, volatility: 0.010, trend: 0.0002, beta: 0.9, dividendYield: 0.018 },
 }
 
+const DAY_MS = 86400000
+const DEFAULT_MARKET_DAYS = 365
+const DEFAULT_PREDICT_DAYS = 30
+const MAX_MARKET_DAYS = 3650
+const MAX_FORECAST_DAYS = 365
+
+type JsonObject = Record<string, unknown>
+
+function parseClampedInt(value: string | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number.parseInt(value ?? '', 10)
+  if (Number.isNaN(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+function parseRiskTolerance(value: unknown, fallback = 0.5) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return fallback
+  return Math.max(0, Math.min(1, value))
+}
+
+function normalizeSymbols(value: unknown, minCount: number = 1) {
+  if (!Array.isArray(value)) return null
+  const symbols = Array.from(new Set(value
+    .filter((v): v is string => typeof v === 'string')
+    .map(v => v.trim().toUpperCase())
+    .filter(v => Boolean(ASSETS[v]))))
+
+  return symbols.length >= minCount ? symbols : null
+}
+
+async function safeReadJson(c: any): Promise<JsonObject | null> {
+  try {
+    return await c.req.json()
+  } catch {
+    return null
+  }
+}
+
 // Seeded random number generator for deterministic results
 function seededRandom(seed: number): () => number {
   let s = seed
@@ -69,19 +121,18 @@ function seededRandom(seed: number): () => number {
   }
 }
 
-function generateHistoricalData(asset: AssetConfig, days: number = 365) {
+function generateHistoricalData(asset: AssetConfig, days: number = DEFAULT_MARKET_DAYS) {
   const now = Date.now()
-  const dayMs = 86400000
-  const seedBase = asset.symbol.split('').reduce((a, c) => a + c.charCodeAt(0), 0) + Math.floor(now / dayMs)
+  const seedBase = asset.symbol.split('').reduce((a, c) => a + c.charCodeAt(0), 0) + Math.floor(now / DAY_MS)
   const rand = seededRandom(seedBase)
   
-  const data: any[] = []
+  const data: Candle[] = []
   // Start price within ±10% of base for realistic values
   let price = asset.basePrice * (0.92 + rand() * 0.16)
   let volume = 1000000 + rand() * 5000000
   
   for (let i = days; i >= 0; i--) {
-    const date = new Date(now - i * dayMs)
+    const date = new Date(now - i * DAY_MS)
     if (date.getDay() === 0 || date.getDay() === 6) {
       if (asset.category !== 'Crypto' && asset.category !== 'Forex') continue
     }
@@ -112,6 +163,28 @@ function generateHistoricalData(asset: AssetConfig, days: number = 365) {
     })
   }
   return data
+}
+
+const historyCache = new Map<string, Candle[]>()
+
+function getHistoricalData(asset: AssetConfig, days: number) {
+  const normalizedDays = Math.max(2, days)
+  const seedDay = Math.floor(Date.now() / DAY_MS)
+  const key = `${asset.symbol}:${normalizedDays}:${seedDay}`
+
+  if (historyCache.has(key)) {
+    return historyCache.get(key)!
+  }
+
+  const generated = generateHistoricalData(asset, normalizedDays)
+  historyCache.set(key, generated)
+
+  if (historyCache.size > 256) {
+    const firstKey = historyCache.keys().next().value
+    if (firstKey) historyCache.delete(firstKey)
+  }
+
+  return generated
 }
 
 // ============================================================
@@ -345,7 +418,7 @@ function monteCarloSimulation(data: any[], days: number = 30, simulations: numbe
       maxDownside: +((predictions[days].p5 / lastPrice - 1) * 100).toFixed(2),
       volatility: +(stdReturn * Math.sqrt(252) * 100).toFixed(2),
       bullishProbability: +((bullishCount / simulations) * 100).toFixed(1),
-      sharpeRatio: +((meanReturn * 252) / (stdReturn * Math.sqrt(252))).toFixed(3),
+      sharpeRatio: stdReturn === 0 ? 0 : +((meanReturn * 252) / (stdReturn * Math.sqrt(252))).toFixed(3),
       simulations,
     }
   }
@@ -525,7 +598,7 @@ function optimizePortfolio(symbols: string[], riskTolerance: number = 0.5) {
   for (const sym of symbols) {
     const asset = ASSETS[sym]
     if (!asset) continue
-    const data = generateHistoricalData(asset, 252)
+    const data = getHistoricalData(asset, 252)
     const closes = data.map(d => d.close)
     const dailyReturns: number[] = []
     for (let i = 1; i < closes.length; i++) {
@@ -541,7 +614,7 @@ function optimizePortfolio(symbols: string[], riskTolerance: number = 0.5) {
       name: asset.name,
       annualReturn: +(meanReturn * 252 * 100).toFixed(2),
       annualVolatility: +(stdDev * Math.sqrt(252) * 100).toFixed(2),
-      sharpe: +((meanReturn * 252) / (stdDev * Math.sqrt(252))).toFixed(3),
+      sharpe: stdDev === 0 ? 0 : +((meanReturn * 252) / (stdDev * Math.sqrt(252))).toFixed(3),
       currentPrice: closes[closes.length - 1],
     })
   }
@@ -610,7 +683,7 @@ app.get('/api/assets', (c) => {
   const assetsWithPrices: Record<string, any> = {}
   
   for (const [symbol, asset] of Object.entries(ASSETS)) {
-    const data = generateHistoricalData(asset, 30)
+    const data = getHistoricalData(asset, 30)
     const last = data[data.length - 1]
     const prev = data[data.length - 2]
     const change = last.close - prev.close
@@ -634,11 +707,11 @@ app.get('/api/assets', (c) => {
 // Get historical data with technical indicators
 app.get('/api/market/:symbol', (c) => {
   const symbol = c.req.param('symbol').toUpperCase()
-  const days = parseInt(c.req.query('days') || '365')
+  const days = parseClampedInt(c.req.query('days'), DEFAULT_MARKET_DAYS, 2, MAX_MARKET_DAYS)
   const asset = ASSETS[symbol]
   if (!asset) return c.json({ error: 'Asset not found' }, 404)
   
-  const data = generateHistoricalData(asset, days)
+  const data = getHistoricalData(asset, days)
   const closes = data.map(d => d.close)
   
   const indicators = {
@@ -670,7 +743,7 @@ app.get('/api/market/:symbol', (c) => {
       changePercent: +changePercent.toFixed(2),
       high52w: Math.max(...closes.slice(-252)),
       low52w: Math.min(...closes.slice(-252)),
-      avgVolume: Math.round(data.slice(-20).reduce((s, d) => s + d.volume, 0) / 20),
+      avgVolume: Math.round(data.slice(-Math.min(20, data.length)).reduce((sum, d) => sum + d.volume, 0) / Math.min(20, data.length)),
     }
   })
 })
@@ -678,11 +751,11 @@ app.get('/api/market/:symbol', (c) => {
 // Get predictions for an asset
 app.get('/api/predict/:symbol', (c) => {
   const symbol = c.req.param('symbol').toUpperCase()
-  const days = parseInt(c.req.query('days') || '30')
+  const days = parseClampedInt(c.req.query('days'), DEFAULT_PREDICT_DAYS, 1, MAX_FORECAST_DAYS)
   const asset = ASSETS[symbol]
   if (!asset) return c.json({ error: 'Asset not found' }, 404)
   
-  const data = generateHistoricalData(asset, 365)
+  const data = getHistoricalData(asset, DEFAULT_MARKET_DAYS)
   
   return c.json({
     asset,
@@ -700,29 +773,34 @@ app.get('/api/predict/:symbol', (c) => {
 
 // Portfolio optimization
 app.post('/api/portfolio/optimize', async (c) => {
-  const body = await c.req.json()
-  const { symbols, riskTolerance } = body
-  
-  if (!symbols || !Array.isArray(symbols) || symbols.length < 2) {
-    return c.json({ error: 'Provide at least 2 asset symbols' }, 400)
-  }
-  
-  const result = optimizePortfolio(symbols, riskTolerance || 0.5)
+  const body = await safeReadJson(c)
+  if (!body) return c.json({ error: 'Invalid JSON payload' }, 400)
+
+  const symbols = normalizeSymbols(body.symbols, 2)
+  if (!symbols) return c.json({ error: 'Provide at least 2 valid asset symbols' }, 400)
+
+  const riskTolerance = parseRiskTolerance(body.riskTolerance)
+  const result = optimizePortfolio(symbols, riskTolerance)
   return c.json(result)
 })
 
 // AI Sentiment Analysis
 app.post('/api/ai/analyze', async (c) => {
-  const body = await c.req.json()
-  const { symbol, question } = body
-  
-  const asset = ASSETS[symbol?.toUpperCase()]
+  const body = await safeReadJson(c)
+  if (!body) return c.json({ error: 'Invalid JSON payload' }, 400)
+
+  const symbol = typeof body.symbol === 'string' ? body.symbol.toUpperCase() : ''
+  const question = typeof body.question === 'string' ? body.question.trim() : ''
+
+  const asset = ASSETS[symbol]
   if (!asset) return c.json({ error: 'Asset not found' }, 404)
   
-  const data = generateHistoricalData(asset, 90)
+  const data = getHistoricalData(asset, 90)
   const closes = data.map(d => d.close)
   const last = closes[closes.length - 1]
-  const change30d = ((last - closes[closes.length - 30]) / closes[closes.length - 30] * 100).toFixed(2)
+  const lookback = Math.min(30, closes.length - 1)
+  const referencePrice = closes[closes.length - 1 - lookback]
+  const change30d = ((last - referencePrice) / referencePrice * 100).toFixed(2)
   const rsi = calculateRSI(closes).filter(v => v !== null).pop()
   const composite = calculateCompositeScore(data, asset)
   
@@ -765,8 +843,13 @@ ${question ? `User's specific question: ${question}` : 'Provide a comprehensive 
       }),
     })
     
+    if (!response.ok) {
+      const details = await response.text()
+      return c.json({ error: `AI provider error (${response.status}): ${details.slice(0, 240)}` }, 502)
+    }
+
     const result: any = await response.json()
-    
+
     return c.json({
       analysis: result.choices?.[0]?.message?.content || 'Analysis unavailable',
       dataUsed: {
@@ -786,7 +869,7 @@ app.get('/api/scanner', (c) => {
   const results: any[] = []
   
   for (const [symbol, asset] of Object.entries(ASSETS)) {
-    const data = generateHistoricalData(asset, 365)
+    const data = getHistoricalData(asset, DEFAULT_MARKET_DAYS)
     const composite = calculateCompositeScore(data, asset)
     const mc = monteCarloSimulation(data, 30, 100)
     const last = data[data.length - 1]
@@ -813,15 +896,16 @@ app.get('/api/scanner', (c) => {
 
 // Compare multiple assets
 app.post('/api/compare', async (c) => {
-  const body = await c.req.json()
-  const { symbols } = body
-  
-  if (!symbols || symbols.length < 2) return c.json({ error: 'Provide at least 2 symbols' }, 400)
+  const body = await safeReadJson(c)
+  if (!body) return c.json({ error: 'Invalid JSON payload' }, 400)
+
+  const symbols = normalizeSymbols(body.symbols, 2)
+  if (!symbols) return c.json({ error: 'Provide at least 2 valid symbols' }, 400)
   
   const comparisons = symbols.map((sym: string) => {
     const asset = ASSETS[sym.toUpperCase()]
     if (!asset) return null
-    const data = generateHistoricalData(asset, 365)
+    const data = getHistoricalData(asset, DEFAULT_MARKET_DAYS)
     const composite = calculateCompositeScore(data, asset)
     const mc = monteCarloSimulation(data, 30, 200)
     return {
